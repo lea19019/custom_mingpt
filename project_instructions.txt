@@ -1,0 +1,225 @@
+Lab 4 - Transformers
+ Objective:
+
+To gain deep experience with the transformer architecture.
+
+Deliverable:
+
+For this lab, you will turn in three things IN A SINGLE PDF:
+
+A few screenshots showing some part of the codebase that you coded.  Feel free to pick any section of code that seems interesting, or that you're particularly proud of!  Don’t spend a lot of time on this - I just want to make sure you wrote some code!
+A graph showing training. The x-axis should show steps of optimization, the y-axis should should NLL.  It would also be cool to show a few generations from the model, but this is not required!
+A one-page  writeup showing the results of your 7 ablation experiments, and your conclusions.
+Grading standards:
+
+Project 4 counts for about 8.3% of your overall grade (see Learning Suite for a precise breakdown of the value of different assignments).
+
+You will be graded based on how many of the modifications you are able to complete.
+
+Description:
+
+For this project, you will make various modifications to the minGPT codebase:
+
+https://github.com/karpathy/minGPT
+
+by working from the blog post "Attention wasn't all we needed."
+
+First, we need to be able to test on some real data. To do this, we need to modify minGPT to be able to read real files:
+
+Implement a torch dataset capable of reading realistic JSONL files (like The Pile, or Red Pajama 1T).
+Remember that torch datasets work in tandem with torch dataloaders.  If you've forgotten about all of that, go read the docs on torch datasets/dataloaders!
+The minGPT codebase has examples of datasets.  Your task is to create a new one, but you can use those as examples.
+I have uploaded a data file to /nobackup/archive/usr/dw87/pile_data_10.jsonl. It should be accessible to both login and compute nodes. It's big - 45G, 7M lines of text. This is part of The Pile.
+You’ll probably want to create a simplified version of this for testing. The "head" function in bash scripting may be helpful.
+Then, we want to test the claims in the blog post by systematically testing different possible improvements to the vanilla transformer. To do this, you should implement the following:
+
+Modify minGPT to use SwiGLU, instead of NewGELU
+Modify minGPT to use rotary positional encodings, instead of learned positional encodings
+Modify minGPT to use a learning rate warmup
+Modify minGPT to use a cosine LR scheduler
+Modify minGPT to use RMSNorm, instead of LayerNorm
+For each of these modifications, you can find an explanation of the technique along with some pytorch code in the blog post.  You may need to modify it - and at the very least, you will need to understand the minGPT code to know how to integrate it!
+
+For each of these modifications, we would like to know whether or not it improves performance.  To do that, we need to run an "ablation", where we systematically turn on or off each modification, and see what happens.
+
+In order to run proper ablations on these 5 modifications, you will need to be able to toggle each. That means you'll need to additionally modify the minGPT codebase so that each modification has a command-line parameter that toggles it on or off.
+
+With the modifications in place, and the command-line parameters in place, you are set to run the ablations.
+
+For this part, you should run the following 7 experiments:
+
+First, run the basic minGPT model on your dataset. Record the final log-likelihood.
+Next, run a single experiment for each modification, turning on ONLY that modification. Record the final log-likelihood.
+Finally, run a single experiment with ALL the modifications turned on. Record the final log-likelihood.
+You should then record your observations and your conclusions about their efficacy in a clean, one-page report.
+
+IMPORTANT NOTES:
+
+Keep it simple! Use a batch size of 1, so you don't have to pad, etc.
+There's no specific amount of time you need to train for, but I would like you to train for at least 4 hours for each test. PLAN AHEAD so that you can submit your job to the supercomputer early!
+You can tokenize your text in the dataset object. Don't be a hero and try to pre-tokenize -- just tokenize on-demand.
+Getting started:
+
+1. Clone the repository
+2. Install the necessary packages, with a command like  pip install -e . && pip install torch transformers
+3. You can run the demo.ipynb file to see how the model works
+
+Making Changes
+
+ 
+
+### Dataloader & Tokenizer
+
+
+1. I would start by making a small version of the 'pile_data_10.jsonl' file on the supercomputer to copy over by
+    - ssh into the supercomputer
+    - move to your active directory
+    - cp /nobackup/archive/usr/dw87/pile_data_10.jsonl /nobackup/autodelete/usr/YOUR_RC_USERNAME
+    # make a small version of the file, maybe called "pile_data_10_small.jsonl"
+
+2. Copy the small file to your local machine
+    scp YOUR_RC_USERNAME@ssh.rc.byu.edu:/nobackup/autodelete/usr/YOUR_RC_USERNAME/pile_data_10_small.jsonl .
+
+3. Create a new dataloader in your python file that uses the gpt2 tokenizer. Start with something like this:
+
+```python
+##################################################
+# DATASET                                        #
+##################################################
+
+import json
+from torch.utils.data import Dataset
+
+class JSONLDataset(Dataset):
+    def __init__(self, file_path, split='train', test_size=1000):
+        self.file_path = file_path
+        with open(self.file_path, 'r') as f:
+            lines = f.readlines()
+        
+        print(f'Length of lines: {len(lines)}')
+        prelength = len(lines)
+        data = []
+        for i, line in enumerate(lines):
+            try:
+                # Processes the line and extracts the 'text' field
+                d = json.loads(line)['text']
+                # Skips short text entries
+                if len(d) < 10:
+                    continue
+                data.append(d)
+            except json.JSONDecodeError:
+                # Silently skip lines that fail to parse
+                pass 
+
+        print(f'Length of data: {len(data) / prelength * 100:.2f}%')
+        
+        # Implements the train/test split
+        if split == 'train':
+            self.data = data[:-test_size]
+        else:
+            self.data = data[-test_size:]
+
+    def __len__(self):
+        # Returns the total number of items in the dataset
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        # Returns the raw text at the specified index
+        return self.data[idx]
+
+
+    def get_vocab_size(self):
+        # your code here
+        pass
+
+    def get_block_size(self):
+        # your code here
+        pass
+
+file_path = '/nobackup/autodelete/usr/YOUR_RC_USERNAME/pile_data_10.jsonl'
+# file_path = 'pile_data_10_first_50000.jsonl'
+# file_path = '100.jsonl'
+
+# Initialize the dataset with a test size of 1000 lines
+print(f'Making dataset... {get_elapsed_time() / 60} minutes')
+train_dataset = JSONLDataset(file_path, split='train', test_size=10)
+print(len(train_dataset))
+```
+
+### Training
+
+
+1. Create a training script. I have a batch size of one and I'm saving the loss every 1000 iterations and the model every 25000 iterations.
+2. I would recommend training on a smaller dataset quickly to make sure everything is working before training on the full dataset.  
+
+## Running on Supercomputers
+
+
+### Local Machine
+1. Copy data to the supercomputer
+ 
+
+### Login Node
+1. SSH into the super computer
+2. Move to your active directory
+3. Copy the pile data to our autodelete directory
+4. pip3 install virtualenv
+5. Create a virtual environment
+    /usr/bin/virtualenv myenv
+6. Activate the virtual environment
+    source ./myenv/bin/activate
+7. pip install all necessary
+    pip install -e .
+    pip install torch transformers
+8. Run the code on login (it will download huggingface tokenizer)
+    python3 project2a.py
+9. Create a tmux session so we can connect to it later
+    tmux new -s project2a
+
+### Compute Node
+1. Get on compute node by salloc in the tmux session
+    salloc --time=3:00:00 --qos=dw87 --nodes=1 --gpus=1 --mem=500G --cpus-per-task=64
+2. Activate the virtual environment
+    source ./myenv/bin/activate
+3. Run the code on compute node
+    python3 project2a.py
+4. It should be training and saving output to your specified directory, I'm saving checkpoints to my output directory
+
+Notes:
+
+You are welcome to use any publicly available code on the internet to help you.
+
+To run pytorch on the supercomputer, you may consider a workflow like the following:
+
+On a LOGIN node:
+
+(you probably want to run the following commands from your compute folder to get access to more storage)
+run module load python/3.11
+you’ll need to install virtualenv.  Use a command like pip3 install virtualenv
+the virtualenv binary is probably installed in your ~/.local/bin/ directory
+create a virtual environment named (for example) myenv: ~/.local/bin/virtualenv myenv
+activate the virtual environment: source ./myenv/bin/activate
+install whatever packages you’d like: pip install torch
+On a COMPUTE node, running in the script you submitted via sbatch:
+
+run module load python/3.11
+make sure you cd into your compute folder
+activate your environment: source ./myenv/bin/activate
+run your python training/inference script
+Hints
+
+To help you calibrate, a student who got this working said the following:
+
+I did the 'gpt2' size
+
+I had a learning rate of 5e-6
+
+12 hours to train
+
+175,000 training steps
+
+I got down to a loss in the 5's
+
+Block size of 512
+
+Batch size of 16
