@@ -1,147 +1,254 @@
+# Attention Wasn't All We Needed on minGPT
 
-# minGPT
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![Transformer](https://img.shields.io/badge/Architecture-Transformer-blueviolet)](https://arxiv.org/abs/1706.03762)
+[![CUDA](https://img.shields.io/badge/CUDA-Ready-76B900?logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-zone)
+[![Performance](https://img.shields.io/badge/Performance-Optimized-success)](https://github.com/karpathy/minGPT)
 
-![mingpt](mingpt.jpg)
+> Architecturally enhanced implementation of [minGPT](https://github.com/karpathy/minGPT) by Andrej Karpathy, incorporating modern transformer optimizations from Stephen Diehl's ["Attention Wasn't All We Needed"](https://www.stephendiehl.com/posts/post_transformers/).
 
-A PyTorch re-implementation of [GPT](https://github.com/openai/gpt-2), both training and inference. minGPT tries to be small, clean, interpretable and educational, as most of the currently available GPT model implementations can a bit sprawling. GPT is not a complicated model and this implementation is appropriately about 300 lines of code (see [mingpt/model.py](mingpt/model.py)). All that's going on is that a sequence of indices feeds into a [Transformer](https://arxiv.org/abs/1706.03762), and a probability distribution over the next index in the sequence comes out. The majority of the complexity is just being clever with batching (both across examples and over sequence length) for efficiency.
+## Overview
 
-**note (Jan 2023)**: though I may continue to accept and change some details, minGPT is in a semi-archived state. For more recent developments see my rewrite [nanoGPT](https://github.com/karpathy/nanoGPT). Basically, minGPT became referenced across a wide variety of places (notebooks, blogs, courses, books, etc.) which made me less willing to make the bigger changes I wanted to make to move the code forward. I also wanted to change the direction a bit, from a sole focus on education to something that is still simple and hackable but has teeth (reproduces medium-sized industry benchmarks, accepts some tradeoffs to gain runtime efficiency, etc).
+This project implements modern transformer optimizations from scratch by modifying minGPT's core architecture at the source-code level. The goal was to gain a deeper understanding of transformer architectures by translating Stephen Diehl's ["Attention Wasn't All We Needed"](https://www.stephendiehl.com/posts/post_transformers/) article into working code and systematically evaluating the impact of each technique.
 
-The minGPT library is three files: [mingpt/model.py](mingpt/model.py) contains the actual Transformer model definition, [mingpt/bpe.py](mingpt/bpe.py) contains a mildly refactored Byte Pair Encoder that translates between text and sequences of integers exactly like OpenAI did in GPT, [mingpt/trainer.py](mingpt/trainer.py) is (GPT-independent) PyTorch boilerplate code that trains the model. Then there are a number of demos and projects that use the library in the `projects` folder:
+Implemented modifications include **Rotary Positional Embeddings (RoPE)**, **SwiGLU activation**, **RMSNorm**, and two learning rate scheduling strategies (**Linear Warmup** and **Cosine Annealing**). Training was performed on The Pile dataset using a custom JSONL data loader with GPT-2 BPE tokenization.
 
-- `projects/adder` trains a GPT from scratch to add numbers (inspired by the addition section in the GPT-3 paper)
-- `projects/chargpt` trains a GPT to be a character-level language model on some input text file
-- `demo.ipynb` shows a minimal usage of the `GPT` and `Trainer` in a notebook format on a simple sorting example
-- `generate.ipynb` shows how one can load a pretrained GPT2 and generate text given some prompt
+**Key Finding**: RoPE delivered the strongest individual performance improvement. All architectural modifications showed better performance than baseline, though interesting interactions emerged when combining multiple techniques.
 
-### Library Installation
+---
 
-If you want to `import mingpt` into your project:
+## Architectural Modifications (The Engine Room)
 
-```
-git clone https://github.com/karpathy/minGPT.git
-cd minGPT
-pip install -e .
-```
+This project implements modern transformer optimizations from scratch, modifying minGPT's core architecture at the source-code level. All modifications are controlled via configuration flags, enabling systematic ablation studies.
 
-### Usage
+### What Was Implemented
 
-Here's how you'd instantiate a GPT-2 (124M param version):
+**Rotary Positional Embeddings (RoPE)** - [model.py:21-88](mingpt/model.py#L21-L88)
+- Custom `RotaryEmbedding` module generating sinusoidal position encodings
+- Applied rotation to Q/K tensors in attention mechanism before score computation
+- Removed learned positional embeddings (`wpe`) when RoPE is enabled
+- Handles multi-head attention broadcasting and sequence length variations
+
+**SwiGLU Activation** - [model.py:90-119](mingpt/model.py#L90-L119)
+- Gated linear unit with SiLU activation replacing standard GELU in MLP blocks
+- Three linear projections (w1, w2, w3) with element-wise gating
+- Maintains 4x hidden dimension expansion matching GPT-2 architecture
+- Conditional replacement in `Block` class via `use_swiglu` flag
+
+**RMSNorm** - [model.py:186-261](mingpt/model.py#L186-L261)
+- Simplified normalization replacing LayerNorm throughout the model
+- Applied at pre-attention, pre-MLP, and final layer positions
+- Weight decay blacklisting to prevent training instabilities
+- Drop-in replacement via `use_rmsnorm` configuration flag
+
+**Learning Rate Schedulers** - [trainer.py:15-50](mingpt/trainer.py#L15-L50)
+
+Two distinct scheduling strategies implemented as separate techniques:
+
+1. **Linear Warmup Only** (`LinearWarmupScheduler`): Gradual ramp from 0 → base_lr over 1,000 steps, then maintains constant learning rate
+2. **Cosine Annealing with Warmup** (`CosineAnnealingWarmupScheduler`): Linear warmup phase followed by cosine decay to minimum learning rate over remaining training iterations
+
+Both implemented as PyTorch `_LRScheduler` subclasses for systematic comparison
+
+---
+
+## What I Learned
+
+### Understanding Transformer Architectures at a Deeper Level
+
+Implementing these modifications from scratch provided hands-on insight into how transformers actually work under the hood. Reading research papers and blog posts is one thing; translating them into working PyTorch code that integrates with an existing architecture is entirely different.
+
+### Translating Research into Code
+
+Papers often omit critical implementation details—tensor shapes, broadcasting semantics, when exactly to apply transformations in the forward pass. Successfully implementing RoPE, SwiGLU, and RMSNorm required piecing together information from multiple sources and debugging until it worked.
+
+### The Value of Systematic Experimentation
+
+Running ablation studies revealed which modifications genuinely improve performance versus which sound good in theory but fail in practice. Not all "best practices" from large-scale models transfer to smaller scales, and combining techniques doesn't guarantee cumulative benefits.
+
+### Loss Improvements Validate the Approach
+
+Seeing measurable loss reductions confirmed that these architectural choices matter. The systematic comparison provided concrete evidence about what works and what doesn't, rather than relying on intuition or anecdotal claims
+
+---
+
+## Training Results
+
+### Loss Curves: All Experimental Configurations
+
+![Training Comparison](./visualizations/training_comparison.png)
+
+**Loss evolution over ~90,000 iterations** comparing all 7 configurations. RoPE and RMSNorm demonstrate consistently lower loss trajectories, while the combined "All Modifications" configuration reveals interesting interaction effects between individual techniques.
+
+### Individual Method Comparison
+
+![Individual Method Grid](./visualizations/individual_grid.png)
+
+**3×3 grid visualization** showing each modification's training dynamics in isolation. Enables direct comparison of convergence behavior and final loss values across all ablation experiments.
+
+---
+
+## Experimental Methodology
+
+### Implementation Approach
+
+The architecture uses modular design patterns enabling clean ablations:
 
 ```python
-from mingpt.model import GPT
-model_config = GPT.get_default_config()
-model_config.model_type = 'gpt2'
-model_config.vocab_size = 50257 # openai's model vocabulary
-model_config.block_size = 1024  # openai's model block_size (i.e. input context length)
-model = GPT(model_config)
+# Conditional component replacement
+self.ln_1 = nn.RMSNorm(config.n_embd) if config.use_rmsnorm else nn.LayerNorm(config.n_embd)
+self.mlpf = SwiGLU(config.n_embd) if config.use_swiglu else standard_mlp
+
+# Conditional execution in forward pass
+if self.config.use_rope:
+    cos, sin = self.rotary_emb(T, device=x.device)
+    q, k = apply_rotary_pos_emb(q, k, cos, sin)
 ```
 
-And here's how you'd train it:
+This design allowed independent testing of each modification through command-line flags (`-r`, `-s`, `-n`, `-w`, `-c`, `-a`), producing the systematic comparison shown in the results below
 
-```python
-# your subclass of torch.utils.data.Dataset that emits example
-# torch LongTensor of lengths up to 1024, with integers from [0,50257)
-train_dataset = YourDataset()
+### Training Configuration
 
-from mingpt.trainer import Trainer
-train_config = Trainer.get_default_config()
-train_config.learning_rate = 5e-4 # many possible options, see the file
-train_config.max_iters = 1000
-train_config.batch_size = 32
-trainer = Trainer(train_config, model, train_dataset)
-trainer.run()
+- **Model Architecture**: GPT-2 (minGPT baseline)
+- **Learning Rate**: 5e-6
+- **Batch Size**: 16
+- **Context Length**: 512 tokens
+- **Training Duration**: ~90,000 iterations (target: 175,000)
+- **Dataset**: The Pile (first 50,000 lines, JSONL format)
+- **Train/Test Split**: 49,000 / 1,000
+- **Tokenizer**: GPT-2 BPE (vocab size: 50,257)
+- **Warmup Steps**: 1,000 (when enabled)
+- **Compute**: SLURM cluster with single GPU per job
+
+### Experimental Design: Seven Ablation Studies
+
+1. **Baseline** (`-b`): No modifications (vanilla GPT-2)
+2. **RoPE** (`-r`): Rotary positional embeddings only
+3. **SwiGLU** (`-s`): SwiGLU activation only
+4. **RMSNorm** (`-n`): RMS normalization only
+5. **Warmup** (`-w`): Linear warmup only
+6. **Cosine** (`-c`): Linear warmup + cosine decay
+7. **All Modifications** (`-a`): All features enabled
+
+### Reproducibility
+
+**Command-line flags** ([lab4.py](lab4.py)) enable individual modifications:
+
+```bash
+# Baseline
+python lab4.py -b
+
+# Individual modifications
+python lab4.py -r  # RoPE
+python lab4.py -s  # SwiGLU
+python lab4.py -n  # RMSNorm
+python lab4.py -w  # Warmup
+python lab4.py -c  # Cosine scheduler
+
+# All modifications
+python lab4.py -a
 ```
 
-See `demo.ipynb` for a more concrete example.
+**Batch execution** for systematic experimentation:
 
-### Unit tests
-
-Coverage is not super amazing just yet but:
-
-```
-python -m unittest discover tests
+```bash
+bash run_all.sh  # Submits all 7 experiments to SLURM
 ```
 
-### todos
+**Logging**:
+- Loss logged every 1,000 iterations → `losses/{experiment_name}.csv`
+- Checkpoints saved every 25,000 iterations → `checkpoints/{experiment_name}/`
 
-- add gpt-2 finetuning demo on arbitrary given text file
-- add dialog agent demo
-- better docs of outcomes for existing projects (adder, chargpt)
-- add mixed precision and related training scaling goodies
-- distributed training support
-- reproduce some benchmarks in projects/, e.g. text8 or other language modeling
-- proper logging instead of print statement amateur hour haha
-- i probably should have a requirements.txt file...
-- it should be possible to load in many other model weights other than just gpt2-\*
+---
 
-### References
+## Repository Structure
 
-Code:
+```
+custom_mingpt/
+├── mingpt/
+│   ├── model.py           # Core architecture: RoPE, SwiGLU, RMSNorm
+│   ├── trainer.py         # Training loop with LR schedulers
+│   ├── utils.py           # Utilities and helper functions
+│   └── bpe.py             # GPT-2 BPE tokenizer
+├── dataloader.py          # Custom JSONL dataset loader for The Pile
+├── lab4.py                # Main training script with CLI flags
+├── plotter.py             # Visualization generation (loss curves, grids)
+├── run_all.sh             # Batch experiment submission (SLURM)
+├── run_single.sh          # SLURM job template
+├── losses/                # Training metrics (CSV files)
+│   ├── baseline.csv
+│   ├── rope.csv
+│   ├── swiglu.csv
+│   ├── rmsnorm.csv
+│   ├── warmup.csv
+│   ├── cosine.csv
+│   └── all_modifications.csv
+├── visualizations/        # Generated plots
+│   ├── training_comparison.png
+│   ├── individual_grid.png
+│   └── *.png (individual experiment plots)
+├── checkpoints/           # Model checkpoints (saved every 25K iters)
+└── README.md              # This file
+```
 
-- [openai/gpt-2](https://github.com/openai/gpt-2) has the model definition in TensorFlow, but not the training code
-- [openai/image-gpt](https://github.com/openai/image-gpt) has some more modern gpt-3 like modification in its code, good reference as well
-- [huggingface/transformers](https://github.com/huggingface/transformers) has a [language-modeling example](https://github.com/huggingface/transformers/tree/master/examples/pytorch/language-modeling). It is full-featured but as a result also somewhat challenging to trace. E.g. some large functions have as much as 90% unused code behind various branching statements that is unused in the default setting of simple language modeling
+---
 
-Papers + some implementation notes:
+## Getting Started
 
-#### Improving Language Understanding by Generative Pre-Training (GPT-1)
+### Installation
 
-- Our model largely follows the original transformer work
-- We trained a 12-layer decoder-only transformer with masked self-attention heads (768 dimensional states and 12 attention heads). For the position-wise feed-forward networks, we used 3072 dimensional inner states.
-- Adam max learning rate of 2.5e-4. (later GPT-3 for this model size uses 6e-4)
-- LR decay: increased linearly from zero over the first 2000 updates and annealed to 0 using a cosine schedule
-- We train for 100 epochs on minibatches of 64 randomly sampled, contiguous sequences of 512 tokens.
-- Since layernorm is used extensively throughout the model, a simple weight initialization of N(0, 0.02) was sufficient
-- bytepair encoding (BPE) vocabulary with 40,000 merges
-- residual, embedding, and attention dropouts with a rate of 0.1 for regularization.
-- modified version of L2 regularization proposed in (37), with w = 0.01 on all non bias or gain weights
-- For the activation function, we used the Gaussian Error Linear Unit (GELU).
-- We used learned position embeddings instead of the sinusoidal version proposed in the original work
-- For finetuning: We add dropout to the classifier with a rate of 0.1. learning rate of 6.25e-5 and a batchsize of 32. 3 epochs. We use a linear learning rate decay schedule with warmup over 0.2% of training. λ was set to 0.5.
-- GPT-1 model is 12 layers and d_model 768, ~117M params
+```bash
+# Clone the repository
+git clone <repository-url>
+cd custom_mingpt
 
-#### Language Models are Unsupervised Multitask Learners (GPT-2)
+# Install dependencies
+pip install torch numpy tiktoken
+```
 
-- LayerNorm was moved to the input of each sub-block, similar to a pre-activation residual network
-- an additional layer normalization was added after the final self-attention block.
-- modified initialization which accounts for the accumulation on the residual path with model depth is used. We scale the weights of residual layers at initialization by a factor of 1/√N where N is the number of residual layers. (weird because in their released code i can only find a simple use of the old 0.02... in their release of image-gpt I found it used for c_proj, and even then only for attn, not for mlp. huh. https://github.com/openai/image-gpt/blob/master/src/model.py)
-- the vocabulary is expanded to 50,257
-- increase the context size from 512 to 1024 tokens
-- larger batchsize of 512 is used
-- GPT-2 used 48 layers and d_model 1600 (vs. original 12 layers and d_model 768). ~1.542B params
+### Training
 
-#### Language Models are Few-Shot Learners (GPT-3)
+#### Run Individual Experiments
 
-- GPT-3: 96 layers, 96 heads, with d_model of 12,288 (175B parameters).
-- GPT-1-like: 12 layers, 12 heads, d_model 768 (125M)
-- We use the same model and architecture as GPT-2, including the modified initialization, pre-normalization, and reversible tokenization described therein
-- we use alternating dense and locally banded sparse attention patterns in the layers of the transformer, similar to the Sparse Transformer
-- we always have the feedforward layer four times the size of the bottleneck layer, dff = 4 ∗ dmodel
-- all models use a context window of nctx = 2048 tokens.
-- Adam with β1 = 0.9, β2 = 0.95, and eps = 10−8
-- All models use weight decay of 0.1 to provide a small amount of regularization. (NOTE: GPT-1 used 0.01 I believe, see above)
-- clip the global norm of the gradient at 1.0
-- Linear LR warmup over the first 375 million tokens. Then use cosine decay for learning rate down to 10% of its value, over 260 billion tokens.
-- gradually increase the batch size linearly from a small value (32k tokens) to the full value over the first 4-12 billion tokens of training, depending on the model size.
-- full 2048-sized time context window is always used, with a special END OF DOCUMENT token delimiter
+```bash
+# Baseline (no modifications)
+python lab4.py -b
 
-#### Generative Pretraining from Pixels (Image GPT)
+# Individual modifications
+python lab4.py -r  # RoPE only
+python lab4.py -n  # RMSNorm only
+python lab4.py -s  # SwiGLU only
+python lab4.py -w  # Warmup only
+python lab4.py -c  # Cosine scheduler only
 
-- When working with images, we pick the identity permutation πi = i for 1 ≤ i ≤ n, also known as raster order.
-- we create our own 9-bit color palette by clustering (R, G, B) pixel values using k-means with k = 512.
-- Our largest model, iGPT-XL, contains L = 60 layers and uses an embedding size of d = 3072 for a total of 6.8B parameters.
-- Our next largest model, iGPT-L, is essentially identical to GPT-2 with L = 48 layers, but contains a slightly smaller embedding size of d = 1536 (vs 1600) for a total of 1.4B parameters.
-- We use the same model code as GPT-2, except that we initialize weights in the layerdependent fashion as in Sparse Transformer (Child et al., 2019) and zero-initialize all projections producing logits.
-- We also train iGPT-M, a 455M parameter model with L = 36 and d = 1024
-- iGPT-S, a 76M parameter model with L = 24 and d = 512 (okay, and how many heads? looks like the Github code claims 8)
-- When pre-training iGPT-XL, we use a batch size of 64 and train for 2M iterations, and for all other models we use a batch size of 128 and train for 1M iterations.
-- Adam with β1 = 0.9 and β2 = 0.95
-- The learning rate is warmed up for one epoch, and then decays to 0
-- We did not use weight decay because applying a small weight decay of 0.01 did not change representation quality.
-- iGPT-S lr 0.003
-- No dropout is used.
+# Combinations
+python lab4.py -r -n -w  # RoPE + RMSNorm + Warmup
+python lab4.py -a         # All modifications
+```
 
-### License
+#### Batch Execution (SLURM)
 
-MIT
+```bash
+# Submit all 7 experiments to SLURM
+bash run_all.sh
+```
+
+### Visualization
+
+```bash
+# Generate training curves and comparison plots
+python plotter.py
+```
+
+Output saved to `visualizations/`:
+- `training_comparison.png` - All experiments overlaid
+- `individual_grid.png` - 3×3 grid of individual plots
+- Individual plots per experiment
+
+---
+
+## References
+
+- **Andrej Karpathy**: [minGPT](https://github.com/karpathy/minGPT) - The original implementation this project builds upon
+- **Stephen Diehl**: [Attention Wasn't All We Needed](https://www.stephendiehl.com/posts/post_transformers/) - Blog post motivating these architectural modifications
+- **Vaswani et al. (2017)**: [Attention Is All You Need](https://arxiv.org/abs/1706.03762) - The original transformer paper
